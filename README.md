@@ -1,6 +1,6 @@
 # n8n-nodes-variable
 
-A community node package for [n8n](https://n8n.io) that provides inventor.bot-style local and global variable management for workflow automation — without needing Code nodes.
+A community node package for [n8n](https://n8n.io) that provides local and global variable management for workflow automation — without needing Code nodes.
 
 ---
 
