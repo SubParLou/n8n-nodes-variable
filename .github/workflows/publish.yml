@@ -41,11 +41,11 @@ jobs:
 
       - name: Publish
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN_VARIABLE }}
         run: |
           if [ -z "$NODE_AUTH_TOKEN" ]; then
-            echo "::error::NPM_TOKEN secret is missing. Add NPM_TOKEN in GitHub repository settings (Secrets and variables > Actions > Secrets)."
+            echo "::error::NPM_TOKEN_VARIABLE secret is missing. Add NPM_TOKEN_VARIABLE in GitHub repository settings (Secrets and variables > Actions > Secrets)."
             exit 1
           fi
-          echo "Publishing with NPM_TOKEN secret"
+          echo "Publishing with NPM_TOKEN_VARIABLE secret"
           npm publish --access public
