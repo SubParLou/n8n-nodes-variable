@@ -1,6 +1,6 @@
 {
   "name": "n8n-nodes-variable",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Local and global scoped variables for n8n workflows",
   "keywords": [
     "n8n-community-node-package",
