@@ -1,0 +1,17 @@
+{
+  "node": "n8n-nodes-variable.variable",
+  "nodeVersion": "1.0",
+  "codexVersion": "1.0",
+  "categories": [
+    "Core Nodes",
+    "Helpers"
+  ],
+  "resources": {
+    "primaryDocumentation": [
+      {
+        "url": "https://github.com/dagostino-esi/n8n-nodes-variable"
+      }
+    ]
+  },
+  "alias": ["variable", "state", "store", "counter", "flag"]
+}

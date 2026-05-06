@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 60" width="60" height="60">
+  <!-- Background rounded square -->
+  <rect width="60" height="60" rx="10" ry="10" fill="#6366f1"/>
+  <!-- Outer brackets: { } -->
+  <text
+    x="30" y="43"
+    text-anchor="middle"
+    font-family="'Courier New', Courier, monospace"
+    font-size="28"
+    font-weight="700"
+    fill="white"
+    letter-spacing="-1"
+  >{x}</text>
+</svg>
