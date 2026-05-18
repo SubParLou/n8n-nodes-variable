@@ -29,6 +29,14 @@ import {
   localListVariables,
   localClearNamespace,
 } from './helpers/storage';
+import {
+  dbGetVariable,
+  dbSetVariable,
+  dbDeleteVariable,
+  dbHasVariable,
+  dbListVariables,
+  dbClearNamespace,
+} from './helpers/dbStorage';
 import type {
   VariableScope,
   VariableOperation,
@@ -101,6 +109,11 @@ export class Variable implements INodeType {
             value: 'customNamespace',
             description: 'Workflow global storage with a custom namespace expression.',
           },
+          {
+            name: 'Cross-Workflow (Shared)',
+            value: 'crossWorkflow',
+            description: 'Variables are stored in a shared local database file and are accessible across ALL workflows on this instance.',
+          },
         ],
         default: 'workflowGlobal',
         description: 'Where to store the variable',
@@ -138,7 +151,7 @@ export class Variable implements INodeType {
         description: 'Namespace to organize variables. Supports expressions like economy_{{$json.guild.id}}.',
         displayOptions: {
           show: {
-            scope: ['workflowGlobal', 'nodeLocal'],
+            scope: ['workflowGlobal', 'nodeLocal', 'crossWorkflow'],
           },
         },
       },
@@ -396,9 +409,9 @@ export class Variable implements INodeType {
         name: 'includeMetadata',
         type: 'boolean',
         default: false,
-        description: 'Whether to store and expose createdAt/updatedAt/type metadata for workflow-global and node-local variables',
+        description: 'Whether to store and expose createdAt/updatedAt/type metadata for variables',
         displayOptions: {
-          show: { scope: ['workflowGlobal', 'nodeLocal', 'customNamespace'] },
+          show: { scope: ['workflowGlobal', 'nodeLocal', 'customNamespace', 'crossWorkflow'] },
         },
       },
     ],
@@ -480,6 +493,7 @@ function executeOperation(
   includeMetadata: boolean,
 ): OperationResult {
   const isLocal = scope === 'localExecution';
+  const isDb = scope === 'crossWorkflow';
   const storagePath = isLocal
     ? (ctx.getNodeParameter('localStoragePath', i, '_variables') as string)
     : '';
@@ -487,6 +501,7 @@ function executeOperation(
   // Helpers to get/set/delete/has/list/clear depending on scope
   const get = (key: string): unknown => {
     if (isLocal) return localGetVariable(itemJson, storagePath, namespace, key);
+    if (isDb) return dbGetVariable(namespace, key)?.value;
     const entry = staticGetVariable(getStaticData(ctx, scope), namespace, key);
     return entry?.value;
   };
@@ -494,6 +509,8 @@ function executeOperation(
   const set = (key: string, value: unknown, typeName: string): void => {
     if (isLocal) {
       localSetVariable(itemJson, storagePath, namespace, key, value);
+    } else if (isDb) {
+      dbSetVariable(namespace, key, value, typeName, includeMetadata);
     } else {
       staticSetVariable(getStaticData(ctx, scope), namespace, key, value, typeName, includeMetadata);
     }
@@ -501,16 +518,26 @@ function executeOperation(
 
   const del = (key: string): boolean => {
     if (isLocal) return localDeleteVariable(itemJson, storagePath, namespace, key);
+    if (isDb) return dbDeleteVariable(namespace, key);
     return staticDeleteVariable(getStaticData(ctx, scope), namespace, key);
   };
 
   const has = (key: string): boolean => {
     if (isLocal) return localHasVariable(itemJson, storagePath, namespace, key);
+    if (isDb) return dbHasVariable(namespace, key);
     return staticHasVariable(getStaticData(ctx, scope), namespace, key);
   };
 
   const list = (): Record<string, unknown> => {
     if (isLocal) return localListVariables(itemJson, storagePath, namespace);
+    if (isDb) {
+      const raw = dbListVariables(namespace);
+      const result: Record<string, unknown> = {};
+      for (const [k, entry] of Object.entries(raw)) {
+        result[k] = entry.value;
+      }
+      return result;
+    }
     const raw = staticListVariables(getStaticData(ctx, scope), namespace);
     // unwrap StoredVariableEntry to plain values
     const result: Record<string, unknown> = {};
@@ -522,6 +549,7 @@ function executeOperation(
 
   const clear = (): number => {
     if (isLocal) return localClearNamespace(itemJson, storagePath, namespace);
+    if (isDb) return dbClearNamespace(namespace);
     return staticClearNamespace(getStaticData(ctx, scope), namespace);
   };
 

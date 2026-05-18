@@ -12,6 +12,7 @@ The **Variable** node lets you store, retrieve, update, and delete named variabl
 - **Workflow Global** — persists across executions using n8n's workflow static data
 - **Node Local** — persists for the specific node instance
 - **Custom Namespace** — workflow global storage with a fully dynamic namespace string (great for per-user / per-guild data)
+- **Cross-Workflow (Shared)** — variables are stored in a local SQLite database and shared across **all** workflows on this n8n instance
 
 ---
 
@@ -93,6 +94,18 @@ economy          → balance per user
 cooldowns        → command cooldown per guild+user
 guild_{{$json.guild.id}} → per-guild settings
 ```
+
+### Cross-Workflow (Shared)
+
+Variables are stored in a SQLite database file on the n8n host at:
+
+```
+${N8N_USER_FOLDER ?? ~/.n8n}/n8n-nodes-variable.db
+```
+
+The database and table are **created automatically on first use** — no setup required. Data survives instance restarts and is accessible from any workflow on the same n8n instance. This is ideal for cross-workflow counters, shared feature flags, or any state that multiple workflows need to read and write.
+
+> **Note:** the database lives on the n8n host machine. If you run n8n in a container or cloud environment, ensure the `.n8n` data directory is persisted to a volume so data is not lost on container restarts.
 
 ---
 
@@ -178,7 +191,28 @@ The variable `stats.runCount` persists between executions and increments each ti
 
 ---
 
-## Output modes
+### 5. Cross-workflow shared counter
+
+Count total webhook hits across every workflow on the instance:
+
+**In each workflow that receives a webhook — Increment shared counter:**
+- Operation: `Increment Variable`
+- Scope: `Cross-Workflow (Shared)`
+- Namespace: `global_stats`
+- Key: `webhook_hits`
+- Amount: `1`
+- Initialize If Missing: `true`
+- Initial Value: `0`
+
+**In a reporting workflow — Read the counter:**
+- Operation: `Get Variable`
+- Scope: `Cross-Workflow (Shared)`
+- Namespace: `global_stats`
+- Key: `webhook_hits`
+
+Because the database is shared, all workflows see and update the same value.
+
+---
 
 | Mode | Description |
 |---|---|
@@ -209,11 +243,9 @@ Workflow Global and Node Local variables use n8n's static data, which is:
 
 - **Suitable for:** counters, feature flags, small state objects, per-user values in low-traffic bots
 - **Not suitable for:** high-concurrency write operations (e.g., simultaneously updating the same counter from hundreds of parallel executions)
-- **Not cross-workflow:** variables are scoped to the workflow they belong to, not shared globally across all workflows
+- **Not cross-workflow:** Workflow Global and Node Local variables are scoped to the workflow they belong to. Use the **Cross-Workflow (Shared)** scope to share state across workflows.
 
-For high-volume or high-concurrency state, consider using a database node (Redis, Postgres, MongoDB) instead.
-
-Future versions of this node may add built-in Redis, Postgres, or n8n Data Tables backends.
+For high-volume or high-concurrency state, consider using a dedicated database node (Redis, Postgres, MongoDB) instead.
 
 ---
 

@@ -5,6 +5,10 @@
  * Storage tests use plain IDataObject mocks.
  */
 
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+
 import {
   validateKey,
   validateNamespace,
@@ -475,5 +479,145 @@ describe('invalid number error', () => {
 
   it('throws for Infinity', () => {
     expect(() => parseValueByType('Infinity', 'number')).toThrow();
+  });
+});
+
+// ─── DB storage helpers ───────────────────────────────────────────────────────
+// Tests use a temporary directory so they never touch the real ~/.n8n folder.
+
+describe('db storage helpers', () => {
+  const testDbDir = path.join(os.tmpdir(), `n8n-nodes-variable-test-${Date.now()}`);
+
+  beforeAll(() => {
+    fs.mkdirSync(testDbDir, { recursive: true });
+    // Point the module to our temp directory before the singleton is initialized
+    process.env['N8N_USER_FOLDER'] = testDbDir;
+  });
+
+  afterAll(() => {
+    try {
+      fs.rmSync(testDbDir, { recursive: true, force: true });
+    } catch {
+      // best-effort cleanup
+    }
+    delete process.env['N8N_USER_FOLDER'];
+  });
+
+  // Re-require after env is set so getDb() uses the test path
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const db = () => require('../nodes/Variable/helpers/dbStorage') as typeof import('../nodes/Variable/helpers/dbStorage');
+
+  const NS = 'test_namespace';
+
+  afterEach(() => {
+    db().dbClearNamespace(NS);
+  });
+
+  it('returns undefined for a missing key', () => {
+    expect(db().dbGetVariable(NS, 'missing')).toBeUndefined();
+  });
+
+  it('sets and gets a string variable', () => {
+    db().dbSetVariable(NS, 'name', 'Alice', 'string', false);
+    const entry = db().dbGetVariable(NS, 'name');
+    expect(entry?.value).toBe('Alice');
+  });
+
+  it('sets and gets a number variable', () => {
+    db().dbSetVariable(NS, 'score', 42, 'number', false);
+    expect(db().dbGetVariable(NS, 'score')?.value).toBe(42);
+  });
+
+  it('sets and gets a boolean variable', () => {
+    db().dbSetVariable(NS, 'active', true, 'boolean', false);
+    expect(db().dbGetVariable(NS, 'active')?.value).toBe(true);
+  });
+
+  it('sets and gets an object variable', () => {
+    db().dbSetVariable(NS, 'config', { x: 1, y: 2 }, 'object', false);
+    expect(db().dbGetVariable(NS, 'config')?.value).toEqual({ x: 1, y: 2 });
+  });
+
+  it('overwrites an existing key', () => {
+    db().dbSetVariable(NS, 'k', 'first', 'string', false);
+    db().dbSetVariable(NS, 'k', 'second', 'string', false);
+    expect(db().dbGetVariable(NS, 'k')?.value).toBe('second');
+  });
+
+  it('has returns true for existing key', () => {
+    db().dbSetVariable(NS, 'flag', true, 'boolean', false);
+    expect(db().dbHasVariable(NS, 'flag')).toBe(true);
+  });
+
+  it('has returns false for missing key', () => {
+    expect(db().dbHasVariable(NS, 'nope')).toBe(false);
+  });
+
+  it('delete returns true and removes the key', () => {
+    db().dbSetVariable(NS, 'tmp', 'val', 'string', false);
+    expect(db().dbDeleteVariable(NS, 'tmp')).toBe(true);
+    expect(db().dbHasVariable(NS, 'tmp')).toBe(false);
+  });
+
+  it('delete returns false for nonexistent key', () => {
+    expect(db().dbDeleteVariable(NS, 'ghost')).toBe(false);
+  });
+
+  it('list returns all variables in the namespace', () => {
+    db().dbSetVariable(NS, 'a', 1, 'number', false);
+    db().dbSetVariable(NS, 'b', 2, 'number', false);
+    const vars = db().dbListVariables(NS);
+    expect(Object.keys(vars).sort()).toEqual(['a', 'b']);
+    expect(vars['a'].value).toBe(1);
+    expect(vars['b'].value).toBe(2);
+  });
+
+  it('list returns empty object for unknown namespace', () => {
+    expect(db().dbListVariables('__empty__')).toEqual({});
+  });
+
+  it('clear removes all keys in namespace and returns count', () => {
+    db().dbSetVariable(NS, 'x', 1, 'number', false);
+    db().dbSetVariable(NS, 'y', 2, 'number', false);
+    const count = db().dbClearNamespace(NS);
+    expect(count).toBe(2);
+    expect(db().dbListVariables(NS)).toEqual({});
+  });
+
+  it('clear returns 0 for an already-empty namespace', () => {
+    expect(db().dbClearNamespace('__empty__')).toBe(0);
+  });
+
+  it('stores and exposes metadata when includeMetadata = true', () => {
+    db().dbSetVariable(NS, 'meta', 'val', 'string', true);
+    const entry = db().dbGetVariable(NS, 'meta');
+    expect(entry?.type).toBe('string');
+    expect(entry?.createdAt).toBeDefined();
+    expect(entry?.updatedAt).toBeDefined();
+  });
+
+  it('does not store metadata when includeMetadata = false', () => {
+    db().dbSetVariable(NS, 'no_meta', 'val', 'string', false);
+    const entry = db().dbGetVariable(NS, 'no_meta');
+    expect(entry?.type).toBeUndefined();
+    expect(entry?.createdAt).toBeUndefined();
+  });
+
+  it('namespaces are isolated', () => {
+    db().dbSetVariable(NS, 'shared_key', 'ns1_value', 'string', false);
+    db().dbSetVariable('other_namespace', 'shared_key', 'ns2_value', 'string', false);
+    expect(db().dbGetVariable(NS, 'shared_key')?.value).toBe('ns1_value');
+    expect(db().dbGetVariable('other_namespace', 'shared_key')?.value).toBe('ns2_value');
+    // Clean up other namespace too
+    db().dbClearNamespace('other_namespace');
+  });
+
+  it('supports increment scenario', () => {
+    db().dbSetVariable(NS, 'counter', 0, 'number', false);
+    for (let i = 0; i < 5; i++) {
+      const current = (db().dbGetVariable(NS, 'counter')?.value ?? 0) as number;
+      db().dbSetVariable(NS, 'counter', current + 1, 'number', false);
+    }
+    expect(db().dbGetVariable(NS, 'counter')?.value).toBe(5);
   });
 });
