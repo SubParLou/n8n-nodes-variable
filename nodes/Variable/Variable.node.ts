@@ -727,7 +727,8 @@ function opIncrement(
   const opName = direction === 1 ? 'increment' : 'decrement';
 
   let current: number;
-  if (!has(key)) {
+  const existed = has(key);
+  if (!existed) {
     if (!initIfMissing) {
       throw new Error(
         `Variable "${key}" does not exist in namespace "${namespace}". Enable "Initialize If Missing" to create it automatically.`,
@@ -753,7 +754,7 @@ function opIncrement(
     namespace,
     key,
     value: newValue,
-    previousValue: has(key) ? current : undefined,
+    previousValue: existed ? current : undefined,
   };
 }
 
@@ -923,7 +924,10 @@ function buildOutputItem(
   }
 
   if (outputMode === 'addField') {
-    const fieldName = ctx.getNodeParameter('addFieldName', i, 'value') as string;
+    // For Get Variable, use the dedicated output field name; otherwise use addFieldName
+    const fieldName = result.operation === 'get'
+      ? (ctx.getNodeParameter('getOutputFieldName', i, 'value') as string)
+      : (ctx.getNodeParameter('addFieldName', i, 'value') as string);
     return {
       json: {
         ...updatedItemJson,
