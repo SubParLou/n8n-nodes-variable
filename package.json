@@ -1,6 +1,6 @@
 {
   "name": "n8n-nodes-variable",
-  "version": "1.0.8",
+  "version": "1.0.9",
   "description": "Local and global scoped variables for n8n workflows",
   "keywords": [
     "n8n-community-node-package",
@@ -38,7 +38,6 @@
     ]
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.11",
     "@types/jest": "^29.5.12",
     "@types/node": "^18.19.50",
     "@typescript-eslint/eslint-plugin": "^6.21.0",
@@ -54,9 +53,6 @@
   },
   "peerDependencies": {
     "n8n-workflow": "*"
-  },
-  "dependencies": {
-    "better-sqlite3": "^9.4.0"
   },
   "jest": {
     "preset": "ts-jest",

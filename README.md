@@ -12,7 +12,7 @@ The **Variable** node lets you store, retrieve, update, and delete named variabl
 - **Workflow Global** — persists across executions using n8n's workflow static data
 - **Node Local** — persists for the specific node instance
 - **Custom Namespace** — workflow global storage with a fully dynamic namespace string (great for per-user / per-guild data)
-- **Cross-Workflow (Shared)** — variables are stored in a local SQLite database and shared across **all** workflows on this n8n instance
+- **Cross-Workflow (Shared)** — variables are stored in a local JSON file and shared across **all** workflows on this n8n instance
 
 ---
 
@@ -97,15 +97,15 @@ guild_{{$json.guild.id}} → per-guild settings
 
 ### Cross-Workflow (Shared)
 
-Variables are stored in a SQLite database file on the n8n host at:
+Variables are stored in a JSON file on the n8n host at:
 
 ```
-${N8N_USER_FOLDER ?? ~/.n8n}/n8n-nodes-variable.db
+${N8N_USER_FOLDER ?? ~/.n8n}/n8n-nodes-variable-data.json
 ```
 
-The database and table are **created automatically on first use** — no setup required. Data survives instance restarts and is accessible from any workflow on the same n8n instance. This is ideal for cross-workflow counters, shared feature flags, or any state that multiple workflows need to read and write.
+The file is **created automatically on first use** — no setup or dependencies required. Writes are performed atomically (write to a temporary file, then rename) to prevent corruption. Data survives instance restarts and is accessible from any workflow on the same n8n instance.
 
-> **Note:** the database lives on the n8n host machine. If you run n8n in a container or cloud environment, ensure the `.n8n` data directory is persisted to a volume so data is not lost on container restarts.
+> **Note:** the file lives on the n8n host machine. If you run n8n in a container or cloud environment, ensure the `.n8n` data directory is persisted to a volume so data is not lost on container restarts.
 
 ---
 

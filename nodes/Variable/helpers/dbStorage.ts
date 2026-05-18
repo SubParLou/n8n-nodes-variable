@@ -1,23 +1,32 @@
 /**
- * Cross-workflow variable storage backed by a local SQLite database.
+ * Cross-workflow variable storage backed by a local JSON file.
  *
- * The database is auto-created at:
- *   ${N8N_USER_FOLDER ?? ~/.n8n}/n8n-nodes-variable.db
+ * The file is auto-created at:
+ *   ${N8N_USER_FOLDER ?? ~/.n8n}/n8n-nodes-variable-data.json
  *
- * No configuration is required — the database file and table are created
- * automatically on first use and shared across all workflows on the instance.
+ * No configuration is required. Writes are performed atomically (write to a
+ * temporary file, then rename) to prevent data corruption on unexpected
+ * process exit. No native dependencies are needed.
  */
 
-import Database from 'better-sqlite3';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
 
 import type { StoredVariableEntry } from './types';
 
-const DB_FILENAME = 'n8n-nodes-variable.db';
+const DATA_FILENAME = 'n8n-nodes-variable-data.json';
 
-function getDbPath(): string {
+interface StoredEntry {
+  value: unknown;
+  type?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+type DbData = Record<string, Record<string, StoredEntry>>;
+
+function getDataPath(): string {
   const userFolder =
     process.env['N8N_USER_FOLDER'] ?? path.join(os.homedir(), '.n8n');
   try {
@@ -25,39 +34,31 @@ function getDbPath(): string {
       fs.mkdirSync(userFolder, { recursive: true });
     }
   } catch {
-    // If we can't create the n8n folder, fall back to the OS temp directory
-    return path.join(os.tmpdir(), DB_FILENAME);
+    // If the n8n user folder can't be created, fall back to the OS temp dir
+    return path.join(os.tmpdir(), DATA_FILENAME);
   }
-  return path.join(userFolder, DB_FILENAME);
+  return path.join(userFolder, DATA_FILENAME);
 }
 
-// Singleton connection — reused across all node executions in the same process
-let _db: Database.Database | null = null;
+function readData(): DbData {
+  const dataPath = getDataPath();
+  try {
+    const content = fs.readFileSync(dataPath, 'utf-8');
+    const parsed: unknown = JSON.parse(content);
+    if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+      return parsed as DbData;
+    }
+  } catch {
+    // File doesn't exist yet or is corrupt — start fresh
+  }
+  return {};
+}
 
-function getDb(): Database.Database {
-  if (_db) return _db;
-
-  const dbPath = getDbPath();
-  _db = new Database(dbPath);
-
-  // WAL journal mode allows concurrent reads alongside writes
-  _db.pragma('journal_mode = WAL');
-  _db.pragma('foreign_keys = ON');
-
-  // Auto-create the table if it doesn't exist
-  _db.exec(`
-    CREATE TABLE IF NOT EXISTS variables (
-      namespace  TEXT NOT NULL,
-      key        TEXT NOT NULL,
-      value      TEXT NOT NULL,
-      type       TEXT,
-      created_at TEXT,
-      updated_at TEXT,
-      PRIMARY KEY (namespace, key)
-    )
-  `);
-
-  return _db;
+function writeData(data: DbData): void {
+  const dataPath = getDataPath();
+  const tmpPath = `${dataPath}.tmp`;
+  fs.writeFileSync(tmpPath, JSON.stringify(data), 'utf-8');
+  fs.renameSync(tmpPath, dataPath);
 }
 
 // ─── CRUD operations ─────────────────────────────────────────────────────────
@@ -66,22 +67,14 @@ export function dbGetVariable(
   namespace: string,
   key: string,
 ): StoredVariableEntry | undefined {
-  const db = getDb();
-  const row = db
-    .prepare(
-      'SELECT value, type, created_at, updated_at FROM variables WHERE namespace = ? AND key = ?',
-    )
-    .get(namespace, key) as
-    | { value: string; type?: string; created_at?: string; updated_at?: string }
-    | undefined;
-
-  if (!row) return undefined;
-
+  const data = readData();
+  const entry = data[namespace]?.[key];
+  if (!entry) return undefined;
   return {
-    value: JSON.parse(row.value) as unknown,
-    type: row.type ?? undefined,
-    createdAt: row.created_at ?? undefined,
-    updatedAt: row.updated_at ?? undefined,
+    value: entry.value,
+    type: entry.type,
+    createdAt: entry.created_at,
+    updatedAt: entry.updated_at,
   };
 }
 
@@ -92,83 +85,64 @@ export function dbSetVariable(
   typeName: string,
   includeMetadata: boolean,
 ): void {
-  const db = getDb();
-  const now = new Date().toISOString();
-  const serialized = JSON.stringify(value);
-
-  if (includeMetadata) {
-    // Preserve the original created_at on conflict
-    db.prepare(
-      `INSERT INTO variables (namespace, key, value, type, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?)
-       ON CONFLICT(namespace, key) DO UPDATE SET
-         value      = excluded.value,
-         type       = excluded.type,
-         updated_at = excluded.updated_at`,
-    ).run(namespace, key, serialized, typeName, now, now);
-  } else {
-    db.prepare(
-      `INSERT INTO variables (namespace, key, value, type, created_at, updated_at)
-       VALUES (?, ?, ?, NULL, NULL, NULL)
-       ON CONFLICT(namespace, key) DO UPDATE SET
-         value      = excluded.value,
-         type       = NULL,
-         created_at = NULL,
-         updated_at = NULL`,
-    ).run(namespace, key, serialized);
+  const data = readData();
+  if (!data[namespace]) {
+    data[namespace] = {};
   }
+  const now = new Date().toISOString();
+  if (includeMetadata) {
+    const existing = data[namespace][key];
+    data[namespace][key] = {
+      value,
+      type: typeName,
+      // Preserve original created_at on updates
+      created_at: existing?.created_at ?? now,
+      updated_at: now,
+    };
+  } else {
+    data[namespace][key] = { value };
+  }
+  writeData(data);
 }
 
 export function dbDeleteVariable(namespace: string, key: string): boolean {
-  const db = getDb();
-  const result = db
-    .prepare('DELETE FROM variables WHERE namespace = ? AND key = ?')
-    .run(namespace, key);
-  return result.changes > 0;
+  const data = readData();
+  if (!data[namespace] || !(key in data[namespace])) {
+    return false;
+  }
+  delete data[namespace][key];
+  writeData(data);
+  return true;
 }
 
 export function dbHasVariable(namespace: string, key: string): boolean {
-  const db = getDb();
-  const row = db
-    .prepare(
-      'SELECT 1 FROM variables WHERE namespace = ? AND key = ? LIMIT 1',
-    )
-    .get(namespace, key);
-  return row !== undefined;
+  const data = readData();
+  return Object.prototype.hasOwnProperty.call(data[namespace] ?? {}, key);
 }
 
 export function dbListVariables(
   namespace: string,
 ): Record<string, StoredVariableEntry> {
-  const db = getDb();
-  const rows = db
-    .prepare(
-      'SELECT key, value, type, created_at, updated_at FROM variables WHERE namespace = ? ORDER BY key',
-    )
-    .all(namespace) as Array<{
-    key: string;
-    value: string;
-    type?: string;
-    created_at?: string;
-    updated_at?: string;
-  }>;
-
+  const data = readData();
+  const ns = data[namespace] ?? {};
   const result: Record<string, StoredVariableEntry> = {};
-  for (const row of rows) {
-    result[row.key] = {
-      value: JSON.parse(row.value) as unknown,
-      type: row.type ?? undefined,
-      createdAt: row.created_at ?? undefined,
-      updatedAt: row.updated_at ?? undefined,
+  for (const [k, entry] of Object.entries(ns)) {
+    result[k] = {
+      value: entry.value,
+      type: entry.type,
+      createdAt: entry.created_at,
+      updatedAt: entry.updated_at,
     };
   }
   return result;
 }
 
 export function dbClearNamespace(namespace: string): number {
-  const db = getDb();
-  const result = db
-    .prepare('DELETE FROM variables WHERE namespace = ?')
-    .run(namespace);
-  return result.changes;
+  const data = readData();
+  const count = Object.keys(data[namespace] ?? {}).length;
+  if (count > 0) {
+    delete data[namespace];
+    writeData(data);
+  }
+  return count;
 }
