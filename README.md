@@ -13,6 +13,7 @@ The **Variable** node lets you store, retrieve, update, and delete named variabl
 - **Node Local** — persists for the specific node instance
 - **Custom Namespace** — workflow global storage with a fully dynamic namespace string (great for per-user / per-guild data)
 - **Cross-Workflow (Shared)** — variables are stored in a local JSON file and shared across **all** workflows on this n8n instance
+- **Cross-Workflow (Data Tables)** — variables are stored in n8n's built-in **Data Tables**, visible in the Data Tables UI tab and accessible from any workflow via the n8n API
 
 ---
 
@@ -106,6 +107,31 @@ ${N8N_USER_FOLDER ?? ~/.n8n}/n8n-nodes-variable-data.json
 The file is **created automatically on first use** — no setup or dependencies required. Writes are performed atomically (write to a temporary file, then rename) to prevent corruption. Data survives instance restarts and is accessible from any workflow on the same n8n instance.
 
 > **Note:** the file lives on the n8n host machine. If you run n8n in a container or cloud environment, ensure the `.n8n` data directory is persisted to a volume so data is not lost on container restarts.
+
+### Cross-Workflow (Data Tables)
+
+Variables are stored as rows in an n8n **Data Table**, making them visible and editable directly in the n8n UI under the **Data Tables** tab.
+
+Each namespace maps to one table named `var_<namespace>` (e.g., namespace `global_stats` → table `var_global_stats`). The table is **created automatically on first use**. Each row stores a `key` and a `value` (JSON-serialised).
+
+#### Prerequisites
+
+1. **Enable the n8n API** — in your n8n instance go to **Settings → API** and create an API key.
+2. **Create a credential** — add a new credential of type **n8n Variable Node API** and enter:
+   - **n8n Instance URL** — the base URL your n8n instance is reachable at *from within the n8n process itself* (e.g. `http://localhost:5678` for local/Docker installs, or `https://your-instance.example.com` for cloud).
+   - **API Key** — the key generated in step 1.
+3. In the Variable node, set **Scope** to **Cross-Workflow (Data Tables)** and select the credential.
+
+#### What gets stored
+
+| Column | Content |
+|---|---|
+| `key` | The variable key string |
+| `value` | The variable value, JSON-serialised (numbers, booleans, arrays, and objects all round-trip correctly) |
+
+> **Tip:** Because the data lives in a real Data Table you can query it with the built-in **n8n Data Table** node, view and edit it in the UI, and use it as a lightweight shared datastore without any external database.
+
+> **Note for Docker users:** HTTP calls made by the Variable node originate from inside the container. Use `http://localhost:5678` (or the container's own hostname/service name in Docker Compose) as the base URL — not the external host address.
 
 ---
 
@@ -211,6 +237,33 @@ Count total webhook hits across every workflow on the instance:
 - Key: `webhook_hits`
 
 Because the database is shared, all workflows see and update the same value.
+
+---
+
+### 6. Cross-workflow shared counter (Data Tables)
+
+Same counter as example 5, but stored in n8n Data Tables so you can see and edit the value in the UI.
+
+**Prerequisites:** Create an **n8n Variable Node API** credential (see the *Cross-Workflow (Data Tables)* scope section above).
+
+**Increment on each webhook hit:**
+- Operation: `Increment Variable`
+- Scope: `Cross-Workflow (Data Tables)`
+- Credential: *(select your n8n Variable Node API credential)*
+- Namespace: `global_stats`
+- Key: `webhook_hits`
+- Amount: `1`
+- Initialize If Missing: `true`
+- Initial Value: `0`
+
+**Read the counter from any other workflow:**
+- Operation: `Get Variable`
+- Scope: `Cross-Workflow (Data Tables)`
+- Credential: *(same credential)*
+- Namespace: `global_stats`
+- Key: `webhook_hits`
+
+n8n automatically creates a Data Table called `var_global_stats` with `key` and `value` columns. You can inspect or edit the data at any time from the **Data Tables** tab in the n8n sidebar.
 
 ---
 

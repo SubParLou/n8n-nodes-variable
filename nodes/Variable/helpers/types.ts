@@ -3,7 +3,8 @@ export type VariableScope =
   | 'workflowGlobal'
   | 'nodeLocal'
   | 'customNamespace'
-  | 'crossWorkflow';
+  | 'crossWorkflow'
+  | 'crossWorkflowDataTable';
 
 export type VariableOperation =
   | 'set'

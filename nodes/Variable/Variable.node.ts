@@ -37,6 +37,14 @@ import {
   dbListVariables,
   dbClearNamespace,
 } from './helpers/dbStorage';
+import {
+  dtGetVariable,
+  dtSetVariable,
+  dtDeleteVariable,
+  dtHasVariable,
+  dtListVariables,
+  dtClearNamespace,
+} from './helpers/dataTableStorage';
 import type {
   VariableScope,
   VariableOperation,
@@ -48,6 +56,17 @@ import type {
 export class Variable implements INodeType {
   description: INodeTypeDescription = {
     displayName: 'Variable',
+    credentials: [
+      {
+        name: 'n8nVariableNodeApi',
+        required: false,
+        displayOptions: {
+          show: {
+            scope: ['crossWorkflowDataTable'],
+          },
+        },
+      },
+    ],
     name: 'variable',
     icon: 'file:variable.svg',
     group: ['transform'],
@@ -114,6 +133,11 @@ export class Variable implements INodeType {
             value: 'crossWorkflow',
             description: 'Variables are stored in a shared local database file and are accessible across ALL workflows on this instance.',
           },
+          {
+            name: 'Cross-Workflow (Data Tables)',
+            value: 'crossWorkflowDataTable',
+            description: 'Variables are stored in n8n Data Tables (visible in the Data Tables tab). Requires n8n API credentials.',
+          },
         ],
         default: 'workflowGlobal',
         description: 'Where to store the variable',
@@ -151,7 +175,7 @@ export class Variable implements INodeType {
         description: 'Namespace to organize variables. Supports expressions like economy_{{$json.guild.id}}.',
         displayOptions: {
           show: {
-            scope: ['workflowGlobal', 'nodeLocal', 'crossWorkflow'],
+            scope: ['workflowGlobal', 'nodeLocal', 'crossWorkflow', 'crossWorkflowDataTable'],
           },
         },
       },
@@ -409,7 +433,7 @@ export class Variable implements INodeType {
         name: 'includeMetadata',
         type: 'boolean',
         default: false,
-        description: 'Whether to store and expose createdAt/updatedAt/type metadata for variables',
+        description: 'Whether to store and expose createdAt/updatedAt/type metadata for variables (not supported for Data Tables scope)',
         displayOptions: {
           show: { scope: ['workflowGlobal', 'nodeLocal', 'customNamespace', 'crossWorkflow'] },
         },
@@ -462,7 +486,12 @@ async function processItem(
   // Clone item JSON so we don't mutate the input
   const itemJson: IDataObject = { ...item.json };
 
-  const result = executeOperation(ctx, operation, scope, resolvedNamespace, itemJson, i, includeMetadata);
+  let result: OperationResult;
+  if (scope === 'crossWorkflowDataTable') {
+    result = await executeDataTableOperation(ctx, operation, resolvedNamespace, i);
+  } else {
+    result = executeOperation(ctx, operation, scope, resolvedNamespace, itemJson, i, includeMetadata);
+  }
 
   return buildOutputItem(ctx, item, itemJson, result, outputMode, i);
 }
@@ -575,6 +604,260 @@ function executeOperation(
 function getStaticData(ctx: IExecuteFunctions, scope: VariableScope): IDataObject {
   if (scope === 'nodeLocal') return ctx.getWorkflowStaticData('node');
   return ctx.getWorkflowStaticData('global');
+}
+
+// ─── Data Table scope async executor ─────────────────────────────────────────
+
+async function executeDataTableOperation(
+  ctx: IExecuteFunctions,
+  operation: VariableOperation,
+  namespace: string,
+  i: number,
+): Promise<OperationResult> {
+  const scopeLabel = 'crossWorkflowDataTable';
+
+  switch (operation) {
+    case 'set': {
+      const key = getKey(ctx, i);
+      const valueType = ctx.getNodeParameter('valueType', i, 'auto') as ValueType;
+      const rawValue = ctx.getNodeParameter('value', i, '');
+      const overwrite = ctx.getNodeParameter('overwriteExisting', i, true) as boolean;
+
+      if (!overwrite) {
+        const exists = await dtHasVariable(ctx, namespace, key);
+        if (exists) {
+          throw new Error(
+            `Variable "${key}" already exists in namespace "${namespace}". Enable "Overwrite If Exists" to update it.`,
+          );
+        }
+      }
+
+      const parsed = parseValueByType(rawValue, valueType);
+      const typeName = valueType === 'auto' ? inferValueType(parsed) : valueType;
+      await dtSetVariable(ctx, namespace, key, parsed, typeName, false);
+      return { operation: 'set', scope: scopeLabel, namespace, key, value: parsed };
+    }
+
+    case 'get': {
+      const key = getKey(ctx, i);
+      const exists = await dtHasVariable(ctx, namespace, key);
+      const useDefault = ctx.getNodeParameter('useDefaultValue', i, false) as boolean;
+      const defaultValue = ctx.getNodeParameter('defaultValue', i, '') as string;
+
+      let value: unknown;
+      if (exists) {
+        const entry = await dtGetVariable(ctx, namespace, key);
+        value = entry?.value;
+      } else if (useDefault) {
+        value = defaultValue;
+      } else {
+        throw new Error(
+          `Variable "${key}" does not exist in namespace "${namespace}". Enable "Use Default Value" or create the variable first.`,
+        );
+      }
+
+      return { operation: 'get', scope: scopeLabel, namespace, key, value, exists };
+    }
+
+    case 'delete': {
+      const key = getKey(ctx, i);
+      const existed = await dtHasVariable(ctx, namespace, key);
+      const deleted = await dtDeleteVariable(ctx, namespace, key);
+      return { operation: 'delete', scope: scopeLabel, namespace, key, exists: existed, deleted };
+    }
+
+    case 'has': {
+      const key = getKey(ctx, i);
+      const exists = await dtHasVariable(ctx, namespace, key);
+      return { operation: 'has', scope: scopeLabel, namespace, key, exists };
+    }
+
+    case 'list': {
+      const includeValues = ctx.getNodeParameter('includeValues', i, true) as boolean;
+      const raw = await dtListVariables(ctx, namespace);
+      const keys = Object.keys(raw);
+      const result: OperationResult = {
+        operation: 'list',
+        scope: scopeLabel,
+        namespace,
+        keys,
+        count: keys.length,
+      };
+      if (includeValues) {
+        const vars: Record<string, unknown> = {};
+        for (const [k, entry] of Object.entries(raw)) {
+          vars[k] = entry.value;
+        }
+        result.variables = vars;
+      }
+      return result;
+    }
+
+    case 'clear': {
+      const confirmation = ctx.getNodeParameter('clearConfirmation', i, '') as string;
+      if (confirmation.trim() !== 'CLEAR') {
+        throw new Error(
+          'Clear cancelled: you must type CLEAR (uppercase) in the Confirmation field to proceed.',
+        );
+      }
+      const count = await dtClearNamespace(ctx, namespace);
+      return { operation: 'clear', scope: scopeLabel, namespace, count, cleared: true };
+    }
+
+    case 'increment':
+    case 'decrement': {
+      const key = getKey(ctx, i);
+      const amount = ctx.getNodeParameter('incrementAmount', i, 1) as number;
+      const initIfMissing = ctx.getNodeParameter('initIfMissingNumeric', i, true) as boolean;
+      const initialValue = ctx.getNodeParameter('numericInitialValue', i, 0) as number;
+      const direction = operation === 'increment' ? 1 : -1;
+
+      let current: number;
+      const existed = await dtHasVariable(ctx, namespace, key);
+      if (!existed) {
+        if (!initIfMissing) {
+          throw new Error(
+            `Variable "${key}" does not exist in namespace "${namespace}". Enable "Initialize If Missing" to create it automatically.`,
+          );
+        }
+        current = initialValue;
+      } else {
+        const entry = await dtGetVariable(ctx, namespace, key);
+        const existing = entry?.value;
+        if (typeof existing !== 'number' || !Number.isFinite(existing)) {
+          throw new Error(
+            `Cannot ${operation} "${key}": current value is not a finite number (got ${typeof existing}: ${JSON.stringify(existing)}).`,
+          );
+        }
+        current = existing;
+      }
+
+      const newValue = current + direction * Math.abs(amount);
+      await dtSetVariable(ctx, namespace, key, newValue, 'number', false);
+      return {
+        operation,
+        scope: scopeLabel,
+        namespace,
+        key,
+        value: newValue,
+        previousValue: existed ? current : undefined,
+      };
+    }
+
+    case 'appendToArray': {
+      const key = getKey(ctx, i);
+      const valueType = ctx.getNodeParameter('valueType', i, 'auto') as ValueType;
+      const rawValue = ctx.getNodeParameter('value', i, '');
+      const initIfMissing = ctx.getNodeParameter('initIfMissingArray', i, true) as boolean;
+
+      let arr: unknown[];
+      const exists = await dtHasVariable(ctx, namespace, key);
+      if (!exists) {
+        if (!initIfMissing) {
+          throw new Error(
+            `Variable "${key}" does not exist. Enable "Initialize If Missing" to create an empty array automatically.`,
+          );
+        }
+        arr = [];
+      } else {
+        const entry = await dtGetVariable(ctx, namespace, key);
+        const existing = entry?.value;
+        if (!Array.isArray(existing)) {
+          throw new Error(
+            `Cannot append to "${key}": existing value is not an array (got ${typeof existing}).`,
+          );
+        }
+        arr = [...existing];
+      }
+
+      const parsed = parseValueByType(rawValue, valueType);
+      arr.push(parsed);
+      await dtSetVariable(ctx, namespace, key, arr, 'array', false);
+      return { operation: 'appendToArray', scope: scopeLabel, namespace, key, value: arr };
+    }
+
+    case 'mergeObject': {
+      const key = getKey(ctx, i);
+      const objectJsonRaw = ctx.getNodeParameter('objectJson', i, '{}') as string;
+      const useDeepMerge = ctx.getNodeParameter('deepMerge', i, false) as boolean;
+      const initIfMissing = ctx.getNodeParameter('initIfMissingObject', i, true) as boolean;
+
+      let incoming: Record<string, unknown>;
+      try {
+        const p = typeof objectJsonRaw === 'object' && objectJsonRaw !== null
+          ? objectJsonRaw
+          : JSON.parse(String(objectJsonRaw));
+        if (typeof p !== 'object' || p === null || Array.isArray(p)) throw new Error('not a plain object');
+        incoming = p as Record<string, unknown>;
+      } catch {
+        throw new Error(`Object (JSON) must be a plain object. Got: ${String(objectJsonRaw).slice(0, 100)}`);
+      }
+
+      let base: Record<string, unknown>;
+      const exists = await dtHasVariable(ctx, namespace, key);
+      if (!exists) {
+        if (!initIfMissing) {
+          throw new Error(
+            `Variable "${key}" does not exist. Enable "Initialize If Missing" to create an empty object automatically.`,
+          );
+        }
+        base = {};
+      } else {
+        const entry = await dtGetVariable(ctx, namespace, key);
+        const existing = entry?.value;
+        if (typeof existing !== 'object' || existing === null || Array.isArray(existing)) {
+          throw new Error(
+            `Cannot merge into "${key}": existing value is not a plain object (got ${Array.isArray(existing) ? 'array' : typeof existing}).`,
+          );
+        }
+        base = { ...(existing as Record<string, unknown>) };
+      }
+
+      const merged = useDeepMerge ? deepMerge(base, incoming) : { ...base, ...incoming };
+      await dtSetVariable(ctx, namespace, key, merged, 'object', false);
+      return { operation: 'mergeObject', scope: scopeLabel, namespace, key, value: merged };
+    }
+
+    case 'toggleBoolean': {
+      const key = getKey(ctx, i);
+      const initIfMissing = ctx.getNodeParameter('initIfMissingBoolean', i, true) as boolean;
+      const initialValue = ctx.getNodeParameter('booleanInitialValue', i, false) as boolean;
+
+      let current: boolean;
+      const exists = await dtHasVariable(ctx, namespace, key);
+      if (!exists) {
+        if (!initIfMissing) {
+          throw new Error(
+            `Variable "${key}" does not exist. Enable "Initialize If Missing" to create it automatically.`,
+          );
+        }
+        current = initialValue;
+      } else {
+        const entry = await dtGetVariable(ctx, namespace, key);
+        const existing = entry?.value;
+        if (typeof existing !== 'boolean') {
+          throw new Error(
+            `Cannot toggle "${key}": existing value is not a boolean (got ${typeof existing}: ${JSON.stringify(existing)}).`,
+          );
+        }
+        current = existing;
+      }
+
+      const newValue = !current;
+      await dtSetVariable(ctx, namespace, key, newValue, 'boolean', false);
+      return {
+        operation: 'toggleBoolean',
+        scope: scopeLabel,
+        namespace,
+        key,
+        value: newValue,
+        previousValue: current,
+      };
+    }
+
+    default:
+      throw new Error(`Unknown operation: ${operation}`);
+  }
 }
 
 // ─── Individual operations ────────────────────────────────────────────────────

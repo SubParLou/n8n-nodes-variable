@@ -1,6 +1,6 @@
 {
   "name": "n8n-nodes-variable",
-  "version": "1.0.9",
+  "version": "1.1.0",
   "description": "Local and global scoped variables for n8n workflows",
   "keywords": [
     "n8n-community-node-package",
@@ -32,7 +32,9 @@
   ],
   "n8n": {
     "n8nNodesApiVersion": 1,
-    "credentials": [],
+    "credentials": [
+      "dist/credentials/N8nVariableNodeApi.credentials.js"
+    ],
     "nodes": [
       "dist/nodes/Variable/Variable.node.js"
     ]
